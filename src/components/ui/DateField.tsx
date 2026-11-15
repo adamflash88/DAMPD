@@ -2,9 +2,9 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 
-import { todayISODate } from '../domain/ids';
-import { colors, radius, spacing, touch } from '../theme/tokens';
-import { AppText } from './AppText';
+import { todayISODate } from '../../domain/ids';
+import { colors, radius, spacing, touch } from '../../theme/tokens';
+import { Text as AppText } from './Text';
 
 function parseISODate(value: string): Date {
   const [y, m, d] = value.split('-').map(Number);
@@ -18,7 +18,7 @@ export function DateField({ label, value, onChange }: { label: string; value: st
 
   return (
     <View style={styles.field}>
-      <AppText variant="label" tone="secondary">
+      <AppText variant="caption" tone="secondary">
         {label}
       </AppText>
       {Platform.OS === 'ios' ? (
@@ -41,7 +41,7 @@ export function DateField({ label, value, onChange }: { label: string; value: st
             accessibilityRole="button"
             accessibilityLabel={`${label}: ${value}`}
           >
-            <AppText variant="valueSmall">{value}</AppText>
+            <AppText variant="value">{value}</AppText>
           </Pressable>
           {open ? (
             <DateTimePicker
@@ -63,7 +63,7 @@ const styles = StyleSheet.create({
   field: { gap: spacing.sm },
   box: {
     minHeight: touch.min,
-    backgroundColor: colors.surface2,
+    backgroundColor: colors.surfaceRaised,
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
     justifyContent: 'center',

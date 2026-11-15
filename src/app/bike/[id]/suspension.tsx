@@ -1,188 +1,261 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
 
-import { AppText } from '../../../components/AppText';
-import { Button } from '../../../components/Button';
-import { IllustrativeBadge } from '../../../components/IllustrativeBadge';
-import { ChipGroup, CommitTextField, TextField } from '../../../components/Inputs';
-import { Card, Divider, EmptyState, Row, Screen, SectionHeader } from '../../../components/Layout';
-import { SettingEditor } from '../../../components/Suspension';
+import { AdjusterRow, MeasurementRow } from '../../../components/suspension/SettingControls';
+import {
+  Button,
+  Card,
+  Collapsible,
+  CommitTextField,
+  Divider,
+  EmptyState,
+  ListGroup,
+  ListRow,
+  Notice,
+  Screen,
+  Section,
+  Segmented,
+  SourceMark,
+  Text,
+  TextField,
+  TextLink,
+} from '../../../components/ui';
 import { bikeRepository, useBike } from '../../../data';
-import { clickerConventionLabel, settingDefsFor } from '../../../domain/settings';
-import { bikeLabel, confirmAll, countUnverifiedInEnd, withHardware, withModifications } from '../../../domain/setup';
-import type { Bike, Spec, SuspensionEndId, SuspensionSetup } from '../../../domain/types';
-import { colors, radius, spacing, touch } from '../../../theme/tokens';
+import { applicableMeasurements, adjusterPath, measurementPath, type MeasurementGroup } from '../../../domain/settings';
+import {
+  bikeName,
+  confirmDemoValues,
+  countBySource,
+  withHardware,
+  withModificationAdded,
+  withModificationRemoved,
+  withSettingValue,
+  withSpringType,
+} from '../../../domain/setup';
+import type { Bike, SuspensionEnd, SuspensionSetup } from '../../../domain/types';
+import { colors, layout, spacing, touch } from '../../../theme/tokens';
 
-const END_OPTIONS = [
+const ENDS = [
   { value: 'fork', label: 'Fork' },
   { value: 'shock', label: 'Shock' },
 ] as const;
 
 export default function SuspensionProfileScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, end: endParam } = useLocalSearchParams<{ id: string; end?: string }>();
   const bike = useBike(id);
-  const [end, setEnd] = useState<SuspensionEndId>('fork');
+  const [end, setEnd] = useState<SuspensionEnd>(endParam === 'shock' ? 'shock' : 'fork');
 
   if (!bike) {
     return (
-      <Screen edges={['bottom']}>
-        <EmptyState title="Bike not found" />
+      <Screen>
+        <EmptyState title="Motorcycle not found" />
       </Screen>
     );
   }
+  return <Profile bike={bike} end={end} setEnd={setEnd} />;
+}
 
-  const save = (setup: SuspensionSetup) => void bikeRepository.updateSuspension(bike.id, setup);
+function Profile({ bike, end, setEnd }: { bike: Bike; end: SuspensionEnd; setEnd: (e: SuspensionEnd) => void }) {
   const setup = bike.suspension;
-  const unverifiedInEnd = countUnverifiedInEnd(setup, end);
+  const save = (next: SuspensionSetup) => void bikeRepository.updateSuspension(bike.id, next);
+  const counts = countBySource(setup);
+  const e = setup[end];
+  const groupRows = (groups: MeasurementGroup[]) =>
+    applicableMeasurements(setup, end)
+      .filter((d) => groups.includes(d.group))
+      .map((d) => (
+        <MeasurementRow
+          key={d.key}
+          def={d}
+          units={bike.units}
+          value={(e.measurements as unknown as Record<string, { value: number | null; source: never }>)[d.key]!}
+          onChange={(v) => save(withSettingValue(setup, measurementPath(end, d.key), v))}
+        />
+      ));
+
+  const confirmDemo = () =>
+    Alert.alert(
+      `Keep ${counts.demo} demo values as your settings?`,
+      'Only do this if you have checked them against your own bike. They will be recorded as entered by you. They will NOT be marked as manufacturer-verified.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Keep as mine', onPress: () => save(confirmDemoValues(setup)) },
+      ],
+    );
+
+  const primaryGroups: MeasurementGroup[] = end === 'fork' ? ['geometry', 'sag'] : ['sag'];
+  const advancedGroups: MeasurementGroup[] = end === 'fork' ? ['spring', 'oil'] : ['spring'];
 
   return (
-    <Screen edges={['bottom']}>
-      <View>
-        <AppText variant="title">{bikeLabel(bike)}</AppText>
-        <AppText variant="caption" tone="secondary">
-          {clickerConventionLabel(bike.units)} · edits apply to future sessions only
-        </AppText>
+    <Screen>
+      <View style={styles.top}>
+        <Text variant="subhead" tone="secondary" numberOfLines={1}>
+          {bikeName(bike)}
+        </Text>
+        <Segmented options={ENDS} value={end} onChange={setEnd} accessibilityLabel="Suspension end" />
       </View>
 
-      <ChipGroup options={END_OPTIONS} value={end} onChange={(v) => v && setEnd(v)} />
-
-      {unverifiedInEnd > 0 ? (
-        <Card level={2} style={styles.notice}>
-          <Row>
-            <IllustrativeBadge compact />
-            <AppText variant="caption" tone="secondary" style={{ flex: 1 }}>
-              {unverifiedInEnd} {end} value{unverifiedInEnd === 1 ? ' is' : 's are'} illustrative seed data, not a
-              verified spec. Edit a value or tap its badge to confirm it.
-            </AppText>
-          </Row>
-          <Button
-            label={`I've checked these: confirm all ${end} values`}
-            variant="secondary"
-            onPress={() => save(confirmAll(setup, end))}
-          />
-        </Card>
+      {counts.demo > 0 ? (
+        <Notice
+          title={`${counts.demo} demo values in use`}
+          body="Amber-dotted values are demonstration placeholders, not specifications. Edit any value to replace it with yours."
+          action={<TextLink label="I've checked them, keep as mine" onPress={confirmDemo} />}
+        />
       ) : null}
 
-      <SectionHeader title="Hardware" />
-      <Card>
-        <HardwareField
-          label="Make"
-          spec={setup[end].make}
-          onCommit={(spec) => save(withHardware(setup, end, 'make', spec))}
-        />
-        <HardwareField
-          label="Model"
-          spec={setup[end].model}
-          onCommit={(spec) => save(withHardware(setup, end, 'model', spec))}
-        />
-      </Card>
+      <Section
+        title="Adjustments"
+        action={<TextLink label="Manage" onPress={() => router.push({ pathname: '/bike/[id]/adjusters', params: { id: bike.id, end } })} />}
+      >
+        {e.adjusters.length === 0 ? (
+          <EmptyState
+            title="No adjusters"
+            body={`Add the adjusters your ${end} actually has.`}
+            action={<Button label="Add adjuster" size="sm" variant="secondary" onPress={() => router.push({ pathname: '/bike/[id]/adjusters', params: { id: bike.id, end } })} />}
+          />
+        ) : (
+          <ListGroup>
+            {e.adjusters.map((a) => (
+              <AdjusterRow key={a.id} adjuster={a} onChange={(v) => save(withSettingValue(setup, adjusterPath(end, a.id), v))} />
+            ))}
+          </ListGroup>
+        )}
+      </Section>
 
-      <SectionHeader title="Modifications" />
-      <ModificationsEditor
-        items={setup[end].modifications}
-        onChange={(mods) => save(withModifications(setup, end, mods))}
-      />
+      <Section title={end === 'fork' ? 'Geometry & sag' : 'Sag'}>
+        <ListGroup>{groupRows(primaryGroups)}</ListGroup>
+      </Section>
 
-      <SectionHeader title="Settings" />
-      <Card>
-        {settingDefsFor(end).map((def, i) => (
-          <View key={def.key}>
-            {i > 0 ? <Divider /> : null}
-            <SettingEditor setup={setup} settingKey={def.key} units={bike.units} onChange={save} />
+      <Card padded={false}>
+        <Collapsible title="Hardware" summary={[e.hardware.make.value, e.hardware.model.value].filter(Boolean).join(' ') || 'Not set'}>
+          <HardwareField label="Make" value={e.hardware.make} onCommit={(t) => save(withHardware(setup, end, 'make', t))} />
+          <HardwareField label="Model" value={e.hardware.model} onCommit={(t) => save(withHardware(setup, end, 'model', t))} />
+          {end === 'fork' ? (
+            <View style={styles.field}>
+              <Text variant="caption" tone="secondary">
+                Spring type
+              </Text>
+              <Segmented
+                accessibilityLabel="Fork spring type"
+                options={[
+                  { value: 'coil', label: 'Coil' },
+                  { value: 'air', label: 'Air' },
+                ]}
+                value={setup.fork.springType}
+                onChange={(t) => save(withSpringType(setup, t))}
+              />
+            </View>
+          ) : null}
+        </Collapsible>
+        <Divider />
+        <Collapsible title="Modifications" summary={e.modifications.length ? `${e.modifications.length}` : 'None'}>
+          <Modifications
+            items={e.modifications}
+            onAdd={(t) => save(withModificationAdded(setup, end, t))}
+            onRemove={(mid) => save(withModificationRemoved(setup, end, mid))}
+          />
+        </Collapsible>
+        <Divider />
+        <Collapsible title="Advanced specifications" summary={end === 'fork' ? 'Spring, oil' : 'Spring'}>
+          <View style={styles.bleed}>
+            {groupRows(advancedGroups)}
+            <ListRow
+              icon="options-outline"
+              title="Adjuster types & ranges"
+              subtitle="Clicks or turns, counting direction, total range"
+              onPress={() => router.push({ pathname: '/bike/[id]/adjusters', params: { id: bike.id, end } })}
+            />
           </View>
-        ))}
+        </Collapsible>
       </Card>
-      <UnitsNote bike={bike} />
+
+      <Text variant="caption" tone="tertiary" align="center">
+        Changes here apply to future sessions. Past sessions keep the setup they started with.
+      </Text>
     </Screen>
   );
 }
 
 function HardwareField({
   label,
-  spec,
+  value,
   onCommit,
 }: {
   label: string;
-  spec: Spec<string>;
-  onCommit: (spec: Spec<string>) => void;
+  value: { value: string | null; source: 'manufacturer' | 'user' | 'demo' | 'unknown' };
+  onCommit: (t: string) => void;
 }) {
   return (
-    <View style={{ gap: spacing.xs }}>
-      <CommitTextField
-        label={label}
-        value={spec.value ?? ''}
-        onCommit={(text) => {
-          const value = text.trim() || null;
-          if (value !== spec.value) onCommit({ value, isVerified: true });
-        }}
-      />
-      {!spec.isVerified ? <IllustrativeBadge onConfirm={() => onCommit({ ...spec, isVerified: true })} /> : null}
+    <View style={styles.field}>
+      <View style={styles.inlineLabel}>
+        <Text variant="caption" tone="secondary">
+          {label}
+        </Text>
+        <SourceMark source={value.value === null ? 'unknown' : value.source} />
+      </View>
+      <CommitTextField value={value.value ?? ''} onCommit={onCommit} placeholder={`${label} (optional)`} accessibilityLabel={label} />
     </View>
   );
 }
 
-function ModificationsEditor({ items, onChange }: { items: string[]; onChange: (items: string[]) => void }) {
+function Modifications({
+  items,
+  onAdd,
+  onRemove,
+}: {
+  items: { id: string; description: string }[];
+  onAdd: (t: string) => void;
+  onRemove: (id: string) => void;
+}) {
   const [draft, setDraft] = useState('');
   const add = () => {
-    const v = draft.trim();
-    if (!v) return;
-    onChange([...items, v]);
+    if (!draft.trim()) return;
+    onAdd(draft);
     setDraft('');
   };
   return (
-    <Card>
-      {items.length === 0 ? (
-        <AppText tone="muted">No modifications recorded.</AppText>
-      ) : (
-        items.map((item, i) => (
-          <Row key={`${item}-${i}`} style={styles.modRow}>
-            <AppText style={{ flex: 1 }}>{item}</AppText>
-            <Pressable
-              onPress={() => onChange(items.filter((_, j) => j !== i))}
-              accessibilityRole="button"
-              accessibilityLabel={`Remove ${item}`}
-              hitSlop={8}
-              style={styles.iconButton}
-            >
-              <Ionicons name="close" size={22} color={colors.textSecondary} />
-            </Pressable>
-          </Row>
-        ))
-      )}
-      <Row>
-        <View style={{ flex: 1 }}>
-          <TextField
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="e.g. Revalved, stiffer springs"
-            onSubmitEditing={add}
-            returnKeyType="done"
-          />
+    <View style={styles.mods}>
+      {items.map((m) => (
+        <View key={m.id} style={styles.modRow}>
+          <Text variant="body" style={styles.flex}>
+            {m.description}
+          </Text>
+          <Pressable
+            onPress={() =>
+              Alert.alert('Remove modification?', m.description, [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Remove', style: 'destructive', onPress: () => onRemove(m.id) },
+              ])
+            }
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${m.description}`}
+            hitSlop={6}
+            style={styles.iconBtn}
+          >
+            <Ionicons name="close" size={18} color={colors.textSecondary} />
+          </Pressable>
         </View>
-        <Button label="Add" icon="add" variant="secondary" onPress={add} disabled={!draft.trim()} />
-      </Row>
-    </Card>
-  );
-}
-
-function UnitsNote({ bike }: { bike: Bike }) {
-  return (
-    <AppText variant="caption" tone="muted">
-      Units: sag {bike.units.sag}, spring rate {bike.units.springRate}, oil level {bike.units.oilLevel}. Change them
-      under Garage → Edit.
-    </AppText>
+      ))}
+      <View style={styles.inline}>
+        <View style={styles.flex}>
+          <TextField value={draft} onChangeText={setDraft} placeholder="e.g. Revalved mid-valve" returnKeyType="done" onSubmitEditing={add} accessibilityLabel="New modification" />
+        </View>
+        <Button label="Add" size="md" variant="secondary" disabled={!draft.trim()} onPress={add} />
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  notice: { gap: spacing.md },
-  modRow: {
-    backgroundColor: colors.surface2,
-    borderRadius: radius.md,
-    paddingLeft: spacing.lg,
-    minHeight: touch.min,
-  },
-  iconButton: { width: touch.min, height: touch.min, alignItems: 'center', justifyContent: 'center' },
+  flex: { flex: 1 },
+  top: { gap: spacing.sm },
+  field: { gap: spacing.xs + 2, paddingTop: spacing.xs },
+  inlineLabel: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  bleed: { marginHorizontal: -layout.cardPadding },
+  mods: { gap: spacing.sm },
+  modRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: touch.min },
+  iconBtn: { width: touch.min, height: touch.min, alignItems: 'center', justifyContent: 'center' },
+  inline: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
 });

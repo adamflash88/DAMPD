@@ -1,61 +1,83 @@
 import { newId, nowISO, todayISODate } from './ids';
+import { ADJUSTER_META } from './settings';
 import { createSnapshot } from './setup';
+import { DEFAULT_UNITS } from './units';
 import type {
+  Adjuster,
+  AdjusterConvention,
+  AdjusterKind,
+  AdjusterMechanism,
   Bike,
-  BikeUnits,
+  DisplayUnits,
   ForkSetup,
-  RatingKey,
-  RiderFeedback,
+  RiderProfile,
   Session,
   ShockSetup,
-  Spec,
   SuspensionSetup,
   TrackConditions,
+  Value,
 } from './types';
 
-export const DEFAULT_UNITS: BikeUnits = {
-  sag: 'mm',
-  springRate: 'N/mm',
-  length: 'mm',
-  oilLevel: 'mm',
-  temperature: 'C',
-  clickerConvention: 'clicksOutFromFullStiff',
-};
+export const unknown = <T,>(): Value<T> => ({ value: null, source: 'unknown' });
 
-/** An empty, rider-entered value. Empty is not "illustrative": there's nothing to verify. */
-export const empty = <T,>(): Spec<T> => ({ value: null, isVerified: true });
+export interface NewAdjusterInput {
+  kind: AdjusterKind;
+  label?: string;
+  mechanism?: AdjusterMechanism;
+  convention?: AdjusterConvention;
+  step?: number;
+}
+
+export function createAdjuster(input: NewAdjusterInput): Adjuster {
+  const mechanism = input.mechanism ?? 'clicks';
+  return {
+    id: input.kind === 'custom' ? newId() : input.kind,
+    kind: input.kind,
+    label: input.kind === 'custom' ? (input.label?.trim() || 'Custom adjuster') : ADJUSTER_META[input.kind].label,
+    mechanism,
+    convention: input.convention ?? 'outFromFullStiff',
+    step: input.step ?? (mechanism === 'turns' ? 0.25 : 1),
+    current: unknown(),
+    range: unknown(),
+  };
+}
+
+/** Typical layout for a modern MX bike: fork comp/reb; shock HSC/LSC/reb. */
+export function defaultForkAdjusters(): Adjuster[] {
+  return [createAdjuster({ kind: 'compression' }), createAdjuster({ kind: 'rebound' })];
+}
+
+export function defaultShockAdjusters(): Adjuster[] {
+  return [
+    createAdjuster({ kind: 'hsc', mechanism: 'turns', step: 0.25 }),
+    createAdjuster({ kind: 'lsc' }),
+    createAdjuster({ kind: 'rebound' }),
+  ];
+}
 
 export function emptyForkSetup(): ForkSetup {
   return {
-    make: empty(),
-    model: empty(),
-    modifications: [],
-    settings: {
-      springRate: empty(),
-      compression: empty(),
-      rebound: empty(),
-      forkHeight: empty(),
-      oilLevel: empty(),
-      raceSag: empty(),
+    hardware: { make: unknown(), model: unknown() },
+    springType: 'coil',
+    adjusters: defaultForkAdjusters(),
+    measurements: {
+      springRate: unknown(),
+      airPressure: unknown(),
+      forkHeight: unknown(),
+      oilHeight: unknown(),
+      oilVolume: unknown(),
+      raceSag: unknown(),
     },
-    clickerRanges: { compression: empty(), rebound: empty() },
+    modifications: [],
   };
 }
 
 export function emptyShockSetup(): ShockSetup {
   return {
-    make: empty(),
-    model: empty(),
+    hardware: { make: unknown(), model: unknown() },
+    adjusters: defaultShockAdjusters(),
+    measurements: { springRate: unknown(), raceSag: unknown(), staticSag: unknown() },
     modifications: [],
-    settings: {
-      springRate: empty(),
-      highSpeedCompression: empty(),
-      lowSpeedCompression: empty(),
-      rebound: empty(),
-      raceSag: empty(),
-      staticSag: empty(),
-    },
-    clickerRanges: { highSpeedCompression: empty(), lowSpeedCompression: empty(), rebound: empty() },
   };
 }
 
@@ -68,7 +90,8 @@ export interface NewBikeInput {
   make: string;
   model: string;
   nickname?: string;
-  units?: BikeUnits;
+  catalogId?: string | null;
+  units?: DisplayUnits;
   suspension?: SuspensionSetup;
 }
 
@@ -82,6 +105,7 @@ export function createBike(input: NewBikeInput): Bike {
     make: input.make.trim(),
     model: input.model.trim(),
     nickname: input.nickname?.trim() ?? '',
+    catalogId: input.catalogId ?? null,
     units: { ...(input.units ?? DEFAULT_UNITS) },
     suspension: input.suspension ?? emptySetup(),
   };
@@ -91,33 +115,22 @@ export const EMPTY_CONDITIONS: TrackConditions = {
   dirtType: null,
   moisture: null,
   ruts: null,
-  temperature: null,
+  roughness: null,
+  temperatureC: null,
+  notes: '',
 };
 
-export function emptyFeedback(): RiderFeedback {
-  const keys: RatingKey[] = [
-    'overall',
-    'frontEnd',
-    'rearEnd',
-    'bottoming',
-    'harshness',
-    'cornering',
-    'straightLineStability',
-  ];
-  return {
-    ratings: Object.fromEntries(keys.map((k) => [k, null])) as RiderFeedback['ratings'],
-    notes: '',
-  };
+export function emptyRiderProfile(): RiderProfile {
+  return { name: '', weightKg: null, skill: null, notes: '', updatedAt: null };
 }
 
 export interface StartSessionInput {
-  trackName: string;
+  trackName?: string;
   date?: string;
-  conditions?: Partial<TrackConditions>;
 }
 
 /** New session with a frozen snapshot of the bike's setup at this moment. */
-export function createSession(bike: Bike, input: StartSessionInput): Session {
+export function createSession(bike: Bike, input: StartSessionInput = {}): Session {
   const now = nowISO();
   return {
     id: newId(),
@@ -125,11 +138,14 @@ export function createSession(bike: Bike, input: StartSessionInput): Session {
     updatedAt: now,
     bikeId: bike.id,
     status: 'active',
-    trackName: input.trackName.trim(),
+    trackName: input.trackName?.trim() ?? '',
     date: input.date ?? todayISODate(),
-    conditions: { ...EMPTY_CONDITIONS, ...input.conditions },
-    feedback: emptyFeedback(),
+    startedAt: now,
+    endedAt: null,
+    conditions: { ...EMPTY_CONDITIONS },
     snapshot: createSnapshot(bike, now),
-    adjustments: [],
+    events: [],
+    notes: '',
+    legacyFeedback: null,
   };
 }

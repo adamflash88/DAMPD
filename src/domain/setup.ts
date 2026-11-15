@@ -1,149 +1,215 @@
 /**
- * Pure functions over suspension setups: immutable updates, snapshots,
- * applying adjustment deltas and diffing two setups.
+ * Pure functions over suspension setups: immutable edits, snapshots,
+ * deriving the effective setup from a session timeline, diffing, and
+ * setup-completeness / provenance summaries.
  */
-import { getClickerRange, getSetting, getSettingDef, SETTING_DEFS } from './settings';
+import { newId, nowISO } from './ids';
+import {
+  adjusterPath,
+  applicableMeasurements,
+  applicablePaths,
+  describeSetting,
+  findAdjuster,
+  getSettingValue,
+  normalizeAdjusterValue,
+  parsePath,
+  type SettingDescriptor,
+} from './settings';
 import type {
-  Adjustment,
+  Adjuster,
+  AdjustmentEvent,
   Bike,
+  ForkMeasurementKey,
   ISODateTime,
-  SettingKey,
+  SessionEvent,
+  SettingPath,
   SetupSnapshot,
-  Spec,
-  SuspensionEndId,
+  ShockMeasurementKey,
+  SpringType,
+  SuspensionEnd,
   SuspensionSetup,
+  Value,
+  ValueSource,
 } from './types';
 
 export function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+export function bikeName(bike: Pick<Bike, 'year' | 'make' | 'model'>): string {
+  return `${bike.year} ${bike.make} ${bike.model}`.trim();
+}
+
 export function bikeLabel(bike: Pick<Bike, 'year' | 'make' | 'model' | 'nickname'>): string {
-  const base = `${bike.year} ${bike.make} ${bike.model}`.trim();
-  return bike.nickname ? `${bike.nickname} · ${base}` : base;
+  return bike.nickname ? `${bike.nickname} · ${bikeName(bike)}` : bikeName(bike);
 }
 
-/** Returns a new setup with one numeric setting replaced. User edits are verified. */
-export function withSetting(
+/** A rider-entered value. Clearing a value makes it unknown. */
+export function userValue<T>(value: T | null): Value<T> {
+  return value === null ? { value: null, source: 'unknown' } : { value, source: 'user' };
+}
+
+// ---------------------------------------------------------------------------
+// Immutable edits (every rider edit produces source 'user')
+// ---------------------------------------------------------------------------
+
+function mapAdjusters(
   setup: SuspensionSetup,
-  key: SettingKey,
-  value: number | null,
-  isVerified = true,
+  end: SuspensionEnd,
+  fn: (adjusters: Adjuster[]) => Adjuster[],
 ): SuspensionSetup {
-  const def = getSettingDef(key);
-  const end = setup[def.end];
+  return { ...setup, [end]: { ...setup[end], adjusters: fn(setup[end].adjusters) } };
+}
+
+export function withSettingValue(setup: SuspensionSetup, path: SettingPath, value: number | null): SuspensionSetup {
+  const p = parsePath(path);
+  if (!p) return setup;
+  if (p.kind === 'adj') {
+    return mapAdjusters(setup, p.end, (list) =>
+      list.map((a) =>
+        a.id === p.key ? { ...a, current: userValue(value === null ? null : normalizeAdjusterValue(a, value)) } : a,
+      ),
+    );
+  }
+  const end = setup[p.end];
+  return { ...setup, [p.end]: { ...end, measurements: { ...end.measurements, [p.key]: userValue(value) } } };
+}
+
+export function withAdjuster(setup: SuspensionSetup, end: SuspensionEnd, adjuster: Adjuster): SuspensionSetup {
+  return mapAdjusters(setup, end, (list) =>
+    list.some((a) => a.id === adjuster.id) ? list.map((a) => (a.id === adjuster.id ? adjuster : a)) : [...list, adjuster],
+  );
+}
+
+export function withoutAdjuster(setup: SuspensionSetup, end: SuspensionEnd, id: string): SuspensionSetup {
+  return mapAdjusters(setup, end, (list) => list.filter((a) => a.id !== id));
+}
+
+export function withHardware(setup: SuspensionSetup, end: SuspensionEnd, field: 'make' | 'model', value: string): SuspensionSetup {
+  const trimmed = value.trim();
   return {
     ...setup,
-    [def.end]: { ...end, settings: { ...end.settings, [def.id]: { value, isVerified } } },
+    [end]: { ...setup[end], hardware: { ...setup[end].hardware, [field]: userValue(trimmed || null) } },
   };
 }
 
-export function withClickerRange(
-  setup: SuspensionSetup,
-  key: SettingKey,
-  max: number | null,
-  isVerified = true,
-): SuspensionSetup {
-  const def = getSettingDef(key);
-  if (def.kind !== 'clicker') return setup;
-  const end = setup[def.end];
-  return {
-    ...setup,
-    [def.end]: { ...end, clickerRanges: { ...end.clickerRanges, [def.id]: { value: max, isVerified } } },
-  };
+export function withSpringType(setup: SuspensionSetup, springType: SpringType): SuspensionSetup {
+  return { ...setup, fork: { ...setup.fork, springType } };
 }
 
-export function withHardware(
-  setup: SuspensionSetup,
-  endId: SuspensionEndId,
-  field: 'make' | 'model',
-  value: Spec<string>,
-): SuspensionSetup {
-  return { ...setup, [endId]: { ...setup[endId], [field]: value } };
+export function withModificationAdded(setup: SuspensionSetup, end: SuspensionEnd, description: string): SuspensionSetup {
+  const text = description.trim();
+  if (!text) return setup;
+  const mod = { id: newId(), description: text, addedAt: nowISO() };
+  return { ...setup, [end]: { ...setup[end], modifications: [...setup[end].modifications, mod] } };
 }
 
-export function withModifications(
-  setup: SuspensionSetup,
-  endId: SuspensionEndId,
-  modifications: string[],
-): SuspensionSetup {
-  return { ...setup, [endId]: { ...setup[endId], modifications } };
+export function withModificationRemoved(setup: SuspensionSetup, end: SuspensionEnd, id: string): SuspensionSetup {
+  return { ...setup, [end]: { ...setup[end], modifications: setup[end].modifications.filter((m) => m.id !== id) } };
 }
 
-/** Marks every value in one end of the setup as verified by the rider. */
-export function confirmAll(setup: SuspensionSetup, endId: SuspensionEndId): SuspensionSetup {
-  const end = setup[endId];
-  const verify = <T,>(r: Record<string, Spec<T>>) =>
-    Object.fromEntries(Object.entries(r).map(([k, v]) => [k, { ...v, isVerified: true }]));
-  return {
-    ...setup,
-    [endId]: {
-      ...end,
-      make: { ...end.make, isVerified: true },
-      model: { ...end.model, isVerified: true },
-      settings: verify(end.settings),
-      clickerRanges: verify(end.clickerRanges),
-    },
-  };
+/** Marks a demo value as confirmed by the rider (becomes 'user', never 'manufacturer'). */
+function confirm<T>(v: Value<T>): Value<T> {
+  return v.source === 'demo' && v.value !== null ? { ...v, source: 'user' } : v;
 }
 
-/** Counts unverified (illustrative) values in one end of a setup. */
-export function countUnverifiedInEnd(setup: SuspensionSetup, endId: SuspensionEndId): number {
-  const end = setup[endId];
-  const specs: Spec<unknown>[] = [
-    end.make,
-    end.model,
-    ...Object.values<Spec<number>>(end.settings),
-    ...Object.values<Spec<number>>(end.clickerRanges),
+/** Converts every demo value to a rider-confirmed value. UI must ask first. */
+export function confirmDemoValues(setup: SuspensionSetup): SuspensionSetup {
+  const s = deepClone(setup);
+  for (const end of ['fork', 'shock'] as const) {
+    const e = s[end];
+    e.hardware.make = confirm(e.hardware.make);
+    e.hardware.model = confirm(e.hardware.model);
+    e.adjusters = e.adjusters.map((a) => ({ ...a, current: confirm(a.current), range: confirm(a.range) }));
+    const m = e.measurements as unknown as Record<string, Value<number>>;
+    for (const k of Object.keys(m)) m[k] = confirm(m[k]!);
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Provenance & completeness
+// ---------------------------------------------------------------------------
+
+/** All provenance-carrying values that apply to this setup. */
+function applicableValues(setup: SuspensionSetup): Value<unknown>[] {
+  const out: Value<unknown>[] = [];
+  for (const end of ['fork', 'shock'] as const) {
+    const e = setup[end];
+    out.push(e.hardware.make, e.hardware.model);
+    for (const a of e.adjusters) out.push(a.current, a.range);
+    for (const d of applicableMeasurements(setup, end)) out.push(getSettingValue(setup, `${end}.m.${d.key}`)!);
+  }
+  return out;
+}
+
+export function countBySource(setup: SuspensionSetup): Record<ValueSource, number> {
+  const counts: Record<ValueSource, number> = { manufacturer: 0, user: 0, demo: 0, unknown: 0 };
+  for (const v of applicableValues(setup)) counts[v.value === null ? 'unknown' : v.source]++;
+  return counts;
+}
+
+export type SetupStatus = 'complete' | 'partial' | 'notConfigured';
+
+/** Core values a rider would normally know; drives the status pill. */
+const CORE_FORK: ForkMeasurementKey[] = ['springRate'];
+const CORE_SHOCK: ShockMeasurementKey[] = ['springRate', 'raceSag'];
+
+function coreValues(setup: SuspensionSetup): Value<unknown>[] {
+  const fork = setup.fork;
+  const values: Value<unknown>[] = [
+    fork.hardware.make,
+    setup.shock.hardware.make,
+    ...fork.adjusters.map((a) => a.current),
+    ...setup.shock.adjusters.map((a) => a.current),
+    ...setup.shock.adjusters.length === 0 && fork.adjusters.length === 0 ? [{ value: null, source: 'unknown' as const }] : [],
+    ...CORE_SHOCK.map((k) => setup.shock.measurements[k]),
+    ...(fork.springType === 'air' ? [fork.measurements.airPressure] : CORE_FORK.map((k) => fork.measurements[k])),
   ];
-  return specs.filter((s) => !s.isVerified).length;
+  return values;
 }
 
-/** Counts unverified (illustrative) values across the whole setup. */
-export function countUnverified(setup: SuspensionSetup): number {
-  return countUnverifiedInEnd(setup, 'fork') + countUnverifiedInEnd(setup, 'shock');
+/**
+ * complete:      every core value known and rider/manufacturer sourced
+ * notConfigured: no core value known at all
+ * partial:       anything in between (including demo-only values)
+ */
+export function setupStatus(setup: SuspensionSetup): SetupStatus {
+  const core = coreValues(setup);
+  const known = core.filter((v) => v.value !== null);
+  if (known.length === 0) return 'notConfigured';
+  const confirmed = known.filter((v) => v.source === 'user' || v.source === 'manufacturer');
+  return confirmed.length === core.length ? 'complete' : 'partial';
 }
 
-/** Deep-copies the bike's current setup + units. Shares no references with the bike. */
+// ---------------------------------------------------------------------------
+// Snapshots & timeline
+// ---------------------------------------------------------------------------
+
+/** Deep copy of setup + units. Shares no references with the bike. */
 export function createSnapshot(bike: Bike, capturedAt: ISODateTime): SetupSnapshot {
-  return deepClone({
-    capturedAt,
-    bikeLabel: bikeLabel(bike),
-    units: bike.units,
-    setup: bike.suspension,
-  });
+  return deepClone({ capturedAt, bikeLabel: bikeLabel(bike), units: bike.units, setup: bike.suspension });
 }
 
 /** Effective setup = snapshot with every adjustment's `after` applied in order. */
-export function applyAdjustments(
-  snapshot: SuspensionSetup,
-  adjustments: readonly Pick<Adjustment, 'setting' | 'after'>[],
-): SuspensionSetup {
-  return adjustments.reduce((setup, adj) => withSetting(setup, adj.setting, adj.after, true), snapshot);
+export function applyAdjustments(snapshot: SuspensionSetup, events: readonly SessionEvent[]): SuspensionSetup {
+  return events.reduce(
+    (setup, e) => (e.type === 'adjustment' ? withSettingValue(setup, e.path, e.after) : setup),
+    snapshot,
+  );
 }
 
-/** Current value of a setting partway through a session (used as an adjustment's `before`). */
-export function effectiveValue(
-  snapshot: SuspensionSetup,
-  adjustments: readonly Pick<Adjustment, 'setting' | 'after'>[],
-  key: SettingKey,
-): number | null {
-  for (let i = adjustments.length - 1; i >= 0; i--) {
-    const adj = adjustments[i];
-    if (adj && adj.setting === key) return adj.after;
+/** Value of a setting at the end of the given events (used as an adjustment's `before`). */
+export function effectiveValue(snapshot: SuspensionSetup, events: readonly SessionEvent[], path: SettingPath): number | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e && e.type === 'adjustment' && e.path === path) return e.after;
   }
-  return getSetting(snapshot, key).value;
+  return getSettingValue(snapshot, path)?.value ?? null;
 }
 
-export function adjustmentDelta(adj: Pick<Adjustment, 'before' | 'after'>): number | null {
-  return adj.before === null ? null : adj.after - adj.before;
-}
-
-/** Clamp a clicker value into 0…max (when a max is known). */
-export function clampClicker(setup: SuspensionSetup, key: SettingKey, value: number): number {
-  const max = getClickerRange(setup, key)?.value;
-  const lower = Math.max(0, Math.round(value));
-  return max === null || max === undefined ? lower : Math.min(lower, max);
+export function adjustmentsOf(events: readonly SessionEvent[]): AdjustmentEvent[] {
+  return events.filter((e): e is AdjustmentEvent => e.type === 'adjustment');
 }
 
 // ---------------------------------------------------------------------------
@@ -151,42 +217,55 @@ export function clampClicker(setup: SuspensionSetup, key: SettingKey, value: num
 // ---------------------------------------------------------------------------
 
 export interface SettingDiff {
-  key: SettingKey;
+  path: SettingPath;
+  descriptor: SettingDescriptor;
   a: number | null;
   b: number | null;
+  /** Present on only one side (e.g. adjuster added or removed). */
+  presence: 'both' | 'aOnly' | 'bOnly';
   changed: boolean;
 }
 
+const same = (a: number | null, b: number | null) =>
+  a === b || (a !== null && b !== null && Math.abs(a - b) < 1e-9);
+
+export function diffSettings(a: SuspensionSetup, b: SuspensionSetup): SettingDiff[] {
+  const paths = [...new Set([...applicablePaths(a), ...applicablePaths(b)])];
+  return paths.flatMap((path) => {
+    const da = describeSetting(a, path);
+    const db = describeSetting(b, path);
+    const descriptor = db ?? da;
+    if (!descriptor) return [];
+    const av = da ? (getSettingValue(a, path)?.value ?? null) : null;
+    const bv = db ? (getSettingValue(b, path)?.value ?? null) : null;
+    const presence = da && db ? 'both' : da ? 'aOnly' : 'bOnly';
+    return [{ path, descriptor, a: av, b: bv, presence, changed: presence !== 'both' || !same(av, bv) }];
+  });
+}
+
 export interface TextDiff {
+  end: SuspensionEnd;
   label: string;
-  end: SuspensionEndId;
   a: string;
   b: string;
   changed: boolean;
 }
 
-const sameNumber = (a: number | null, b: number | null) =>
-  a === b || (a !== null && b !== null && Math.abs(a - b) < 1e-9);
-
-export function diffSettings(a: SuspensionSetup, b: SuspensionSetup): SettingDiff[] {
-  return SETTING_DEFS.map(({ key }) => {
-    const av = getSetting(a, key).value;
-    const bv = getSetting(b, key).value;
-    return { key, a: av, b: bv, changed: !sameNumber(av, bv) };
+export function diffHardware(a: SuspensionSetup, b: SuspensionSetup): TextDiff[] {
+  return (['fork', 'shock'] as const).flatMap((end) => {
+    const rows: [string, string, string][] = [
+      ['Make', a[end].hardware.make.value ?? '', b[end].hardware.make.value ?? ''],
+      ['Model', a[end].hardware.model.value ?? '', b[end].hardware.model.value ?? ''],
+      ['Mods', a[end].modifications.map((m) => m.description).join(', '), b[end].modifications.map((m) => m.description).join(', ')],
+    ];
+    if (end === 'fork') rows.push(['Spring type', a.fork.springType, b.fork.springType]);
+    return rows.map(([label, av, bv]) => ({ end, label, a: av, b: bv, changed: av.trim() !== bv.trim() }));
   });
 }
 
-export function diffHardware(a: SuspensionSetup, b: SuspensionSetup): TextDiff[] {
-  const rows: TextDiff[] = [];
-  for (const end of ['fork', 'shock'] as const) {
-    const pairs: [string, string, string][] = [
-      ['Make', a[end].make.value ?? '', b[end].make.value ?? ''],
-      ['Model', a[end].model.value ?? '', b[end].model.value ?? ''],
-      ['Modifications', a[end].modifications.join(', '), b[end].modifications.join(', ')],
-    ];
-    for (const [label, av, bv] of pairs) {
-      rows.push({ label, end, a: av, b: bv, changed: av.trim() !== bv.trim() });
-    }
-  }
-  return rows;
+/** Paths whose value differs between two setups (for highlighting). */
+export function changedPaths(a: SuspensionSetup, b: SuspensionSetup): Set<SettingPath> {
+  return new Set(diffSettings(a, b).filter((d) => d.changed).map((d) => d.path));
 }
+
+export { adjusterPath, findAdjuster };
