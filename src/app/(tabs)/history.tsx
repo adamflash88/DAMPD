@@ -1,159 +1,116 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { View } from 'react-native';
 
-import { AppText } from '../../components/AppText';
-import { Button } from '../../components/Button';
-import { ChipGroup } from '../../components/Inputs';
-import { EmptyState, Row, Screen } from '../../components/Layout';
-import { useActiveBikeId, useBikes, useSessionsForBike } from '../../data';
-import { DIRT_TYPES, labelFor, MOISTURE_LEVELS } from '../../domain/labels';
-import { bikeLabel } from '../../domain/setup';
-import type { Session } from '../../domain/types';
-import { colors, radius, spacing } from '../../theme/tokens';
+import { SessionCard } from '../../components/session/SessionCard';
+import { Button, ChipGroup, EmptyState, Screen, ScreenHeader, Text } from '../../components/ui';
+import { useActiveBikeId, useBikes, useSessions } from '../../data';
+import { bikeName } from '../../domain/setup';
+import { spacing } from '../../theme/tokens';
+
+const ALL = '__all__';
 
 export default function HistoryScreen() {
   const bikes = useBikes();
   const activeBikeId = useActiveBikeId();
-  const [bikeId, setBikeId] = useState<string | null>(null);
-  const selectedBikeId = bikeId ?? activeBikeId ?? bikes[0]?.id;
-  const sessions = useSessionsForBike(selectedBikeId);
+  const [bikeFilter, setBikeFilter] = useState<string>(activeBikeId ?? ALL);
+  const [trackFilter, setTrackFilter] = useState<string>(ALL);
+  const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
 
-  const toggle = (id: string) =>
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id].slice(-2)));
+  const all = useSessions(bikeFilter === ALL ? null : bikeFilter);
+  const tracks = useMemo(() => [...new Set(all.map((s) => s.trackName.trim()).filter(Boolean))].sort(), [all]);
+  const sessions = trackFilter === ALL ? all : all.filter((s) => s.trackName.trim() === trackFilter);
+  const names = useMemo(() => Object.fromEntries(bikes.map((b) => [b.id, bikeName(b)])), [bikes]);
+
+  const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id].slice(-2)));
+  const compare = () => {
+    const [newer, older] = sessions.filter((s) => selected.includes(s.id));
+    if (newer && older) router.push({ pathname: '/compare', params: { a: `end:${older.id}`, b: `end:${newer.id}` } });
+  };
 
   return (
-    <Screen>
-      <AppText variant="display">History</AppText>
+    <Screen
+      kind="tab"
+      footer={
+        selecting ? (
+          <Button label={selected.length === 2 ? 'COMPARE' : `Select ${2 - selected.length} more`} size="lg" icon="git-compare-outline" disabled={selected.length !== 2} onPress={compare} />
+        ) : undefined
+      }
+    >
+      <ScreenHeader
+        title="History"
+        subtitle={`${sessions.length} session${sessions.length === 1 ? '' : 's'}`}
+        right={
+          all.length >= 2 ? (
+            <Button
+              label={selecting ? 'Done' : 'Compare'}
+              size="sm"
+              variant={selecting ? 'primary' : 'secondary'}
+              icon={selecting ? undefined : 'git-compare-outline'}
+              onPress={() => {
+                setSelecting((x) => !x);
+                setSelected([]);
+              }}
+            />
+          ) : undefined
+        }
+      />
 
-      {bikes.length > 1 ? (
-        <ChipGroup
-          options={bikes.map((b) => ({ value: b.id, label: bikeLabel(b) }))}
-          value={selectedBikeId ?? null}
-          onChange={(v) => {
-            if (v) {
-              setBikeId(v);
-              setSelected([]);
-            }
-          }}
-        />
+      {bikes.length > 1 || tracks.length > 1 ? (
+        <View style={{ gap: spacing.sm }}>
+          {bikes.length > 1 ? (
+            <ChipGroup
+              scroll
+              required
+              options={[{ value: ALL, label: 'All bikes' }, ...bikes.map((b) => ({ value: b.id, label: b.nickname || `${b.model} ${b.year}` }))]}
+              value={bikeFilter}
+              onChange={(v) => {
+                setBikeFilter(v ?? ALL);
+                setTrackFilter(ALL);
+                setSelected([]);
+              }}
+            />
+          ) : null}
+          {tracks.length > 1 ? (
+            <ChipGroup
+              scroll
+              required
+              options={[{ value: ALL, label: 'All tracks' }, ...tracks.map((t) => ({ value: t, label: t }))]}
+              value={trackFilter}
+              onChange={(v) => setTrackFilter(v ?? ALL)}
+            />
+          ) : null}
+        </View>
       ) : null}
 
-      {sessions.length >= 2 ? (
-        <AppText variant="caption" tone="secondary">
-          Tap the circles to pick two sessions to compare.
-        </AppText>
+      {selecting ? (
+        <Text variant="caption" tone="secondary">
+          Pick two sessions to compare their setups and outcomes.
+        </Text>
       ) : null}
 
       {sessions.length === 0 ? (
-        <EmptyState title="No sessions yet" body="Sessions you log for this bike will appear here." />
-      ) : (
-        sessions.map((s) => (
-          <SessionRow
-            key={s.id}
-            session={s}
-            selected={selected.includes(s.id)}
-            selectable={sessions.length >= 2}
-            onToggle={() => toggle(s.id)}
-          />
-        ))
-      )}
-
-      {selected.length === 2 ? (
-        <Button
-          label="Compare selected"
-          icon="git-compare-outline"
-          size="large"
-          onPress={() => {
-            // Older session on the left (A), newer on the right (B).
-            const [a, b] = sessions.filter((s) => selected.includes(s.id)).reverse();
-            if (a && b) router.push({ pathname: '/session/compare', params: { a: a.id, b: b.id } });
-          }}
+        <EmptyState
+          title="No sessions yet"
+          body="Sessions you log at the track show up here with their changes and results."
+          action={<Button label="Start tuning" icon="flag" onPress={() => router.push('/tune')} />}
         />
-      ) : null}
+      ) : (
+        <View style={{ gap: spacing.sm }}>
+          {sessions.map((s) => (
+            <SessionCard
+              key={s.id}
+              session={s}
+              bikeName={bikeFilter === ALL ? names[s.bikeId] : undefined}
+              selectable={selecting}
+              selected={selected.includes(s.id)}
+              onToggleSelect={() => toggle(s.id)}
+              onPress={() => (selecting ? toggle(s.id) : router.push(`/session/${s.id}`))}
+            />
+          ))}
+        </View>
+      )}
     </Screen>
   );
 }
-
-function SessionRow({
-  session,
-  selected,
-  selectable,
-  onToggle,
-}: {
-  session: Session;
-  selected: boolean;
-  selectable: boolean;
-  onToggle: () => void;
-}) {
-  const c = session.conditions;
-  return (
-    <View style={[styles.row, selected && styles.rowSelected]}>
-      {selectable ? (
-        <Pressable
-          onPress={onToggle}
-          hitSlop={8}
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked: selected }}
-          accessibilityLabel={`Select ${session.trackName} on ${session.date} for comparison`}
-          style={styles.check}
-        >
-          <Ionicons
-            name={selected ? 'checkmark-circle' : 'ellipse-outline'}
-            size={30}
-            color={selected ? colors.accent : colors.textMuted}
-          />
-        </Pressable>
-      ) : null}
-      <Pressable
-        style={styles.body}
-        onPress={() => router.push(`/session/${session.id}`)}
-        accessibilityRole="button"
-        accessibilityLabel={`Open session at ${session.trackName} on ${session.date}`}
-      >
-        <Row style={{ justifyContent: 'space-between' }}>
-          <AppText variant="heading" style={{ flex: 1 }} numberOfLines={1}>
-            {session.trackName || 'Untitled track'}
-          </AppText>
-          {session.status === 'active' ? (
-            <AppText variant="label" tone="accent">
-              Live
-            </AppText>
-          ) : null}
-        </Row>
-        <AppText variant="caption" tone="secondary">
-          {session.date} · {[labelFor(DIRT_TYPES, c.dirtType), labelFor(MOISTURE_LEVELS, c.moisture)].filter((x) => x !== '—').join(' · ') || 'No conditions'}
-        </AppText>
-        <Row>
-          <AppText variant="valueSmall" tone="accent">
-            {session.feedback.ratings.overall ?? '—'}
-          </AppText>
-          <AppText variant="caption" tone="secondary">
-            overall
-          </AppText>
-          <AppText variant="valueSmall">{session.adjustments.length}</AppText>
-          <AppText variant="caption" tone="secondary">
-            adjustments
-          </AppText>
-        </Row>
-      </Pressable>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface1,
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    paddingRight: spacing.lg,
-  },
-  rowSelected: { borderColor: colors.accent, backgroundColor: colors.surface2 },
-  check: { width: 60, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
-  body: { flex: 1, paddingVertical: spacing.lg, paddingLeft: spacing.lg, gap: spacing.xs },
-});
