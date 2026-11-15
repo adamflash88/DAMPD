@@ -1,141 +1,129 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
-import { AppText } from '../../components/AppText';
-import { Button } from '../../components/Button';
-import { IllustrativeBadge } from '../../components/IllustrativeBadge';
-import { Card, EmptyState, Row, Screen, SectionHeader } from '../../components/Layout';
-import { IllustrativeLegend, SetupSummary } from '../../components/Suspension';
-import { useActiveBike, useActiveSessionForBike, useLastCompletedSession } from '../../data';
-import { DIRT_TYPES, labelFor, MOISTURE_LEVELS, RUT_LEVELS } from '../../domain/labels';
-import { bikeLabel, countUnverified } from '../../domain/setup';
-import type { Session } from '../../domain/types';
-import { spacing } from '../../theme/tokens';
+import { SessionCard } from '../../components/session/SessionCard';
+import { DemoLegend, SetupSummary } from '../../components/suspension/SetupSummary';
+import { Button, Card, EmptyState, IconButton, Notice, Screen, Section, StatusPill, Text, TextLink } from '../../components/ui';
+import { useActiveBike, useActiveSession, useSessions } from '../../data';
+import { formatDuration, sessionTitle, summarizeSession } from '../../domain/session';
+import { bikeName, countBySource, setupStatus } from '../../domain/setup';
+import { colors, spacing } from '../../theme/tokens';
+import { useNow } from '../../hooks/useNow';
 
 export default function HomeScreen() {
   const bike = useActiveBike();
-  const activeSession = useActiveSessionForBike(bike?.id);
-  const lastSession = useLastCompletedSession(bike?.id);
+  const active = useActiveSession(bike?.id);
+  const recent = useSessions(bike?.id ?? null)[0];
+  const now = useNow(active ? 30_000 : null);
 
   if (!bike) {
     return (
-      <Screen>
-        <AppText variant="display">DAMPD</AppText>
+      <Screen kind="tab">
+        <Header />
         <EmptyState
-          title="No bike yet"
-          body="Add a bike to your garage to start logging setups."
-          action={<Button label="Add bike" icon="add" onPress={() => router.push('/bike/new')} />}
+          title="Add your first motorcycle"
+          body="Pick your bike to start tracking suspension settings and tuning sessions."
+          action={<Button label="Add motorcycle" icon="add" onPress={() => router.push('/bike/new')} />}
         />
       </Screen>
     );
   }
 
-  const unverified = countUnverified(bike.suspension);
+  const status = setupStatus(bike.suspension);
+  const demo = countBySource(bike.suspension).demo;
+  const hardware = [bike.suspension.fork.hardware.make.value, bike.suspension.shock.hardware.make.value]
+    .filter(Boolean)
+    .join(' / ');
+  const activeSum = active ? summarizeSession(active) : null;
 
   return (
-    <Screen>
-      <View>
-        <AppText variant="label" tone="accent">
-          DAMPD
-        </AppText>
-        <AppText variant="display">Dashboard</AppText>
+    <Screen kind="tab">
+      <Header />
+
+      <Card variant="raised" style={styles.bikeCard}>
+        <View style={styles.bikeTop}>
+          <View style={styles.flex}>
+            <Text variant="overline" tone="tertiary">
+              Active motorcycle
+            </Text>
+            <Text variant="title" numberOfLines={1}>
+              {bikeName(bike)}
+            </Text>
+            <Text variant="subhead" tone="secondary" numberOfLines={1}>
+              {[bike.nickname ? `“${bike.nickname}”` : null, hardware || null].filter(Boolean).join(' · ') || 'Suspension not set up yet'}
+            </Text>
+          </View>
+          <Button label="Switch" size="sm" variant="secondary" icon="swap-horizontal" onPress={() => router.push('/bike/switch')} />
+        </View>
+        <View style={styles.bikeMeta}>
+          <StatusPill status={status} />
+          <TextLink label="Profile" onPress={() => router.push(`/bike/${bike.id}`)} />
+        </View>
+      </Card>
+
+      <View style={styles.cta}>
+        <Button
+          label={active ? 'CONTINUE SESSION' : 'START TUNING'}
+          icon={active ? 'play' : 'flag'}
+          size="lg"
+          onPress={() => (active ? router.push(`/session/${active.id}`) : router.push('/tune'))}
+        />
+        {active && activeSum ? (
+          <Text variant="caption" tone="secondary" align="center">
+            {sessionTitle(active)} · {formatDuration(active.startedAt, now)} · {activeSum.testRuns} runs · {activeSum.adjustments} changes
+          </Text>
+        ) : null}
       </View>
 
-      <Card level={2}>
-        <AppText variant="label" tone="secondary">
-          Active bike
-        </AppText>
-        <AppText variant="title">{bikeLabel(bike)}</AppText>
-        <AppText variant="caption" tone="secondary">
-          Sag {bike.units.sag} · Springs {bike.units.springRate} · Clickers counted out from full stiff
-        </AppText>
-        {unverified > 0 ? (
-          <Row>
-            <IllustrativeBadge compact />
-            <AppText variant="caption" tone="secondary" style={{ flex: 1 }}>
-              {unverified} value{unverified === 1 ? '' : 's'} not yet confirmed. Open the suspension profile to verify.
-            </AppText>
-          </Row>
-        ) : null}
-        <Button
-          label={activeSession ? 'Resume session' : 'Start session'}
-          icon="flag"
-          size="large"
-          onPress={() =>
-            activeSession ? router.push(`/session/${activeSession.id}`) : router.push('/session')
-          }
-        />
-      </Card>
-
-      <SectionHeader
-        title="Current setup"
-        right={
-          <Button
-            label="Edit"
-            variant="ghost"
-            icon="create-outline"
-            onPress={() => router.push(`/bike/${bike.id}/suspension`)}
+      <Section title="Current setup" action={<TextLink label="Full profile" onPress={() => router.push(`/bike/${bike.id}/suspension`)} />}>
+        <Card>
+          <SetupSummary setup={bike.suspension} units={bike.units} />
+          {demo > 0 ? <DemoLegend /> : null}
+        </Card>
+        {status === 'notConfigured' ? (
+          <Notice
+            tone="neutral"
+            title="Add your clicker settings"
+            body="You can start tuning now. Adding your current settings lets DAMPD show what changed."
+            action={<TextLink label="Set up suspension" onPress={() => router.push(`/bike/${bike.id}/suspension`)} />}
           />
-        }
-      />
-      <Card>
-        <AppText variant="heading">Fork</AppText>
-        <SetupSummary setup={bike.suspension} units={bike.units} end="fork" />
-        <AppText variant="heading" style={styles.mt}>
-          Shock
-        </AppText>
-        <SetupSummary setup={bike.suspension} units={bike.units} end="shock" />
-        {unverified > 0 ? <IllustrativeLegend /> : null}
-      </Card>
+        ) : null}
+      </Section>
 
-      <SectionHeader title="Last session" />
-      {lastSession ? (
-        <SessionSnapshotCard session={lastSession} />
-      ) : (
-        <EmptyState title="No sessions yet" body="Start a session at the track to snapshot this setup." />
-      )}
+      <Section title="Recent activity" action={recent ? <TextLink label="History" onPress={() => router.push('/history')} /> : undefined}>
+        {recent ? (
+          <SessionCard session={recent} onPress={() => router.push(`/session/${recent.id}`)} />
+        ) : (
+          <EmptyState title="No sessions yet" body="Start a session at the track to log feedback and adjustments." />
+        )}
+      </Section>
     </Screen>
   );
 }
 
-function SessionSnapshotCard({ session }: { session: Session }) {
-  const c = session.conditions;
-  const overall = session.feedback.ratings.overall;
+function Header() {
   return (
-    <Card>
-      <Row style={{ justifyContent: 'space-between' }}>
-        <View style={{ flex: 1 }}>
-          <AppText variant="heading">{session.trackName || 'Untitled track'}</AppText>
-          <AppText variant="caption" tone="secondary">
-            {session.date} · {session.status === 'active' ? 'In progress' : 'Completed'}
-          </AppText>
-        </View>
-        <View style={{ alignItems: 'flex-end' }}>
-          <AppText variant="valueLarge" tone="accent">
-            {overall ?? '—'}
-          </AppText>
-          <AppText variant="caption" tone="secondary">
-            overall / 5
-          </AppText>
-        </View>
-      </Row>
-      <AppText tone="secondary">
-        {[labelFor(DIRT_TYPES, c.dirtType), labelFor(MOISTURE_LEVELS, c.moisture), `Ruts: ${labelFor(RUT_LEVELS, c.ruts)}`]
-          .filter((s) => s !== '—')
-          .join(' · ')}
-        {c.temperature !== null ? ` · ${c.temperature}°${session.snapshot.units.temperature}` : ''}
-      </AppText>
-      <AppText variant="bodyStrong">
-        <AppText variant="valueSmall" tone="accent">
-          {session.adjustments.length}
-        </AppText>{' '}
-        adjustment{session.adjustments.length === 1 ? '' : 's'} made
-      </AppText>
-      <Button label="Open session" variant="secondary" onPress={() => router.push(`/session/${session.id}`)} />
-    </Card>
+    <View style={styles.header}>
+      <Text variant="largeTitle" accessibilityRole="header" accessibilityLabel="DAMPD">
+        DAMP<Text variant="largeTitle" tone="accent">D</Text>
+      </Text>
+      <IconButton icon="person-circle-outline" accessibilityLabel="Rider profile" onPress={() => router.push('/settings')} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  mt: { marginTop: spacing.sm },
+  flex: { flex: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  bikeCard: { gap: spacing.md },
+  bikeTop: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
+  bikeMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: spacing.sm + 2,
+  },
+  cta: { gap: spacing.sm, marginTop: -spacing.xs },
 });
