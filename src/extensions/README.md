@@ -9,11 +9,16 @@ These are features we deliberately haven't built yet. Each note says where the f
 - Swap the export in `src/data/index.ts`. Screens import only from `src/data`, so they don't change.
 - Migrate existing AsyncStorage data once: read the `dampd/state` key and insert the rows.
 
-## Setup recommendations (AI or rules-based)
+## Diagnostics / setup recommendations (AI or otherwise)
 
-- Inputs already exist as plain data: `Session.snapshot`, `Session.adjustments`, `Session.conditions` and `Session.feedback`.
-- Add a pure `src/domain/recommendations.ts` (input: sessions; output: suggested `NewAdjustmentInput[]` with rationale), plus a service in `src/services/` if it calls an API.
-- Recommendations should be shown as suggestions the rider accepts. Accepting one goes through `sessionRepository.addAdjustment`, so the history stays honest.
+- Input contract already exists: `buildTuningContext()` in `src/domain/context.ts` returns rider, bike, hardware, modifications, current setup, conditions, structured symptoms, adjustments and outcomes.
+- Implement `DiagnosticsProvider` (same file) in `src/services/`. Don't call providers from screens directly; add a hook in `src/data`.
+- Show results as suggestions the rider accepts. Accepting one goes through `sessionRepository.addAdjustment`, so the history stays honest. Never label rule-based output as AI.
+
+## Professional tuners / service records
+
+- Types and the rider-safe projection exist in `src/domain/service.ts` (`ServiceRecord`, `toRiderView`).
+- To ship: add a `serviceRecords` collection with a schema migration, a `ServiceRecordRepository`, and render records only through `toRiderView`. Technician-private fields must never reach rider screens.
 
 ## Auth and accounts
 
@@ -27,6 +32,6 @@ These are features we deliberately haven't built yet. Each note says where the f
 
 - Put fetchers in `src/services/`. Map responses into `TrackConditions` before they reach the domain layer.
 
-## Unit conversion
+## Units
 
-- Units are stored per bike (`Bike.units`) and captured in each `SetupSnapshot`. A conversion helper in `src/domain/units.ts` can normalize values for comparison. Today, changing units relabels values but doesn't convert them.
+- Values are stored canonically (`src/domain/units.ts`). `Bike.units` only controls display. To add a unit (e.g. bar), extend `Quantity` conversion and `DisplayUnits`.

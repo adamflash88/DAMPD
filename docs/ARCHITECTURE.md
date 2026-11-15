@@ -3,48 +3,67 @@
 ## Layers
 
 ```
-src/app (screens) ──► src/data (hooks + repositories) ──► src/data/zustand (store, AsyncStorage)
-        │                        │
-        └────────► src/domain (pure TS: types, settings, setup math, seed) ◄────┘
+src/app (Expo Router screens)
+   │  reads via hooks, writes via repositories
+   ▼
+src/data ── hooks.ts (reactive reads) · repositories.ts (async commands) · migrations.ts
+   │
+   ▼
+src/data/zustand ── Zustand store persisted to AsyncStorage (key "dampd/state")
+
+src/domain ── pure TypeScript, no React/storage: types, settings registry, setup math,
+              units, catalog, labels, session summaries, tuning context, service records
+src/components/ui ── design-system kit;  src/components/{suspension,session} ── domain widgets
+src/theme/tokens.ts ── every color, spacing step, radius, touch size and type style
 ```
 
-- **Domain** (`src/domain`) has no React or storage imports. It holds the types, the settings registry, and the functions that create snapshots, apply adjustments and diff setups. It's covered by unit tests.
-- **Data** (`src/data`) is split in two:
-  - *Commands* go through async repository interfaces (`bikeRepository`, `sessionRepository`).
-  - *Reads* go through hooks (`useActiveBike`, `useSessionsForBike`, …).
+Screens import only from `src/data` (never the store), so swapping storage for expo-sqlite or a server means re-implementing `Repositories` and the hooks. Screens stay untouched.
 
-  The current implementation is Zustand with the `persist` middleware on AsyncStorage. Screens import only from `src/data`, so moving to expo-sqlite means writing new repositories and hooks, not touching screens.
-- **UI**: `src/theme/tokens.ts` holds every color, spacing step, radius and type style. Components in `src/components` use those tokens and nothing else.
+## Data model (schema v2)
 
-## Data model
-
-| Record | Key fields |
+| Record | Notes |
 | --- | --- |
-| `Bike` | `id`, `createdAt`, `updatedAt`, `year`, `make`, `model`, `nickname`, `units`, `suspension` |
-| `SuspensionSetup` | `fork` and `shock`, each with `make`, `model`, `modifications[]`, `settings`, `clickerRanges` |
-| `Spec<T>` | `{ value, isVerified }`. Every setup value. `isVerified: false` shows the Illustrative badge |
-| `Session` | `id`, timestamps, `bikeId`, `status`, `trackName`, `date`, `conditions`, `feedback`, `snapshot`, `adjustments[]` |
-| `SetupSnapshot` | deep copy of `setup` + `units` + `bikeLabel` + `capturedAt` |
-| `Adjustment` | `id`, timestamps, `setting` (e.g. `shock.lowSpeedCompression`), `before`, `after`, `reason` |
+| `Value<T>` | `{ value, source }`, where `source` is `manufacturer` \| `user` \| `demo` \| `unknown`. These stay distinct. Rider edits produce `user`. Confirming a demo value produces `user`, never `manufacturer`. Nothing in this build assigns `manufacturer`. |
+| `Bike` | Identity (`year`, `make`, `model`, `nickname`, `catalogId`), display `units`, live `suspension`. |
+| `SuspensionSetup` | `fork` / `shock`, each with `hardware`, `adjusters[]`, `measurements` and `modifications[]`. The fork also has `springType` (coil/air). |
+| `Adjuster` | Only the adjusters a bike actually has. `kind` is compression, rebound, hsc, lsc, hsr, lsr or custom. `mechanism` is clicks or turns, with fractional `step` for turns. `convention` is out-from-full-stiff or in-from-full-soft. Also `current` and `range`. |
+| Measurements | Canonical units: spring rate N/mm, lengths mm (sag, fork height, **oil height**), **oil volume** cc (a separate field, never converted from height), air pressure psi. Air pressure shows only on air forks, spring rate only on coil. |
+| `Session` | `snapshot` (immutable deep copy of setup and units at start), `conditions` (latest), `events[]` (append-only timeline), `notes`, `legacyFeedback` (v1 ratings, preserved). |
+| `SessionEvent` | `testRun` (run number, outcome vs. previous run, `SymptomReport[]`, notes), `adjustment` (`path`, `before`, `after`, `reason`), `conditions` (a change log). |
+| `SymptomReport` | Symptom type (or custom label), affected end, severity 1–5, riding situations, confidence, notes. |
+| `SavedSetup` | Named setup copy. Origin is `user`, `session` or `autoBeforeRestore`. |
+| `RiderProfile` | Optional name, weight (kg), skill level, notes. |
 
-### Rules
+### Integrity rules
 
-1. **Snapshots never reference the live profile.** `createSnapshot` deep-copies the bike's setup and units when a session starts. Editing the profile later can't change history. A unit test checks this.
-2. **Adjustments are deltas.** Each one stores `before → after` for a single setting. The setup at the end of a session is never stored; it's always calculated as `applyAdjustments(snapshot.setup, adjustments)`. `before` comes from the snapshot plus earlier adjustments. If you remove an adjustment, the `before` values of the later ones are recalculated.
-3. **Units and clicker convention are stored per bike** (`Bike.units`) and copied into every snapshot. The default is mm for sag, N/mm for springs, and clicks out from full stiff.
-4. **IDs** are UUID v4 from `expo-crypto`. Every record has ISO `createdAt` and `updatedAt` timestamps.
-5. **Schema versioning:** `SCHEMA_VERSION` and `migratePersistedState` live in `src/data/migrations.ts`, and Zustand's `persist({ version, migrate })` calls them. A missing migration step throws instead of quietly corrupting data.
+1. **Snapshots never reference the live profile.** Garage edits can't change history. Tested.
+2. **Adjustments are deltas.** `before` comes from snapshot plus earlier adjustments. The rider can only supply it when it's unknown. The setup at the end of a session is always calculated (`applyAdjustments`), never stored.
+3. **Timelines are append-only.** The only removal is *undo last entry*, which can't invalidate later entries.
+4. **Validation.** Adjuster values snap to the step and are clamped to the range. Measurements have plausibility bounds. The repository rejects unknown setting paths.
+5. **Restoring a saved setup** first saves the current setup as `autoBeforeRestore`.
+6. **Units are display-only.** Switching units never changes stored data.
+7. **IDs** are UUID v4 (`expo-crypto`). Every record has `createdAt` and `updatedAt`.
+
+### Migration v1 → v2
+
+`src/data/migrations.ts` runs automatically through Zustand `persist({ version: 2, migrate })` on the same storage key, so existing installs upgrade in place.
+
+- **Provenance:** `isVerified: true` with a value becomes `user`; `false` becomes `demo`; an empty value becomes `unknown`.
+- **Units:** values move into canonical units, using the unit the v1 bike or snapshot was using (kg/mm → N/mm, in → mm, °F → °C).
+- **Oil level:** v1's single field goes to `oilHeight` if the bike used mm, or `oilVolume` if it used cc.
+- **Clickers:** become `clicks` adjusters with the bike's v1 convention.
+- **Session data:** v1 adjustments become `adjustment` events (paths mapped, values converted). v1 ratings and notes are kept in `legacyFeedback` and shown in the session as "Ratings (earlier app version)".
+- **Nothing is dropped.** Tested with a realistic v1 fixture, including reading a v1 blob from AsyncStorage.
+
+## Future-facing contracts (no implementation by design)
+
+- **Diagnostics:** `src/domain/context.ts` defines `buildTuningContext()`, which returns one serializable object with rider, bike, current setup and every session's starting and ending setup, adjustments and test runs. The `DiagnosticsProvider` interface has **no implementation**, and nothing in the app produces recommendations.
+- **Professional tuners:** `src/domain/service.ts` defines `ServiceRecord`, with `public` (rider-visible) and `private` (technician-only) parts. `toRiderView()` is the only way rider code should read a record, and it strips private data (tested). These records aren't persisted or shown yet.
 
 ## Libraries
 
-All of these are included in Expo Go for SDK 58. Versions were resolved with `expo install` against the SDK's bundled version map.
+All included in Expo Go for SDK 58. Versions come from SDK 58's bundled version map.
 
-| Library | Why |
-| --- | --- |
-| `expo-router` | File-based routing; tabs + stack |
-| `zustand` | Small store with a `persist` middleware |
-| `@react-native-async-storage/async-storage` | Persistence available in Expo Go |
-| `expo-crypto` | `randomUUID()` |
-| `@react-native-community/datetimepicker` | Session date picker |
-| `@expo/vector-icons` | Icons |
-| `expo-updates` | Required for EAS Update configuration |
+`expo-router`, `zustand`, `@react-native-async-storage/async-storage`, `expo-crypto`, `@react-native-community/datetimepicker`, `@expo/vector-icons` (+ `expo-font`, `expo-asset`), `expo-updates` (for EAS Update).
+
+Dev: `jest-expo`, `@testing-library/react-native` (via `expo-router/testing-library`), `eslint-config-expo`.
