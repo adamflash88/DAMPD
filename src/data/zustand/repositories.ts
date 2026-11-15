@@ -120,7 +120,7 @@ const sessions: SessionRepository = {
       id: newId(),
       at: nowISO(),
       path: input.path,
-      before: effectiveValue(s.snapshot.setup, s.events, input.path),
+      before: effectiveValue(s.snapshot.setup, s.events, input.path) ?? input.beforeIfUnknown ?? null,
       after,
       reason: input.reason.trim(),
     };

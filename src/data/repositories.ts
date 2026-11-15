@@ -41,6 +41,11 @@ export interface NewAdjustmentInput {
   /** Canonical units (or adjuster units). */
   after: number;
   reason: string;
+  /**
+   * Only used when the previous value is unknown (nothing in the snapshot or
+   * earlier adjustments). Ignored otherwise, so history can't be contradicted.
+   */
+  beforeIfUnknown?: number | null;
 }
 
 export interface NewTestRunInput {

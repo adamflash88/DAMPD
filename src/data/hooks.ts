@@ -97,3 +97,43 @@ export function useSavedSetup(id: string | undefined): SavedSetup | undefined {
 export function useEffectiveSetup(session: Session | undefined): SuspensionSetup | undefined {
   return useMemo(() => (session ? applyAdjustments(session.snapshot.setup, session.events) : undefined), [session]);
 }
+
+// ---------------------------------------------------------------------------
+// Setup comparison sources
+//   "start:<sessionId>" | "end:<sessionId>" | "setup:<savedSetupId>" | "current:<bikeId>"
+// ---------------------------------------------------------------------------
+
+export interface SetupSource {
+  ref: string;
+  kind: 'start' | 'end' | 'setup' | 'current';
+  title: string;
+  subtitle: string;
+  setup: SuspensionSetup;
+  units: Bike['units'];
+  session?: Session;
+}
+
+export function useSetupSource(ref: string | undefined): SetupSource | undefined {
+  const [kind, id] = (ref ?? '').split(':') as [SetupSource['kind'] | undefined, string | undefined];
+  const session = useDataStore((s) => ((kind === 'start' || kind === 'end') && id ? s.sessions[id] : undefined));
+  const saved = useDataStore((s) => (kind === 'setup' && id ? s.savedSetups[id] : undefined));
+  const bike = useDataStore((s) => (kind === 'current' && id ? s.bikes[id] : undefined));
+  return useMemo(() => {
+    if (!ref || !kind) return undefined;
+    if (session && (kind === 'start' || kind === 'end')) {
+      const title = session.trackName.trim() || 'Untitled session';
+      return {
+        ref,
+        kind,
+        title,
+        subtitle: `${session.date} · ${kind === 'start' ? 'start' : session.status === 'active' ? 'now' : 'end'}`,
+        setup: kind === 'start' ? session.snapshot.setup : applyAdjustments(session.snapshot.setup, session.events),
+        units: session.snapshot.units,
+        session,
+      };
+    }
+    if (saved) return { ref, kind: 'setup', title: saved.name, subtitle: `Saved ${saved.createdAt.slice(0, 10)}`, setup: saved.setup, units: saved.units };
+    if (bike) return { ref, kind: 'current', title: 'Current setup', subtitle: bike.nickname || `${bike.year} ${bike.model}`, setup: bike.suspension, units: bike.units };
+    return undefined;
+  }, [ref, kind, session, saved, bike]);
+}

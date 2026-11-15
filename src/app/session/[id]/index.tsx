@@ -1,250 +1,240 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
-import { Alert, Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Platform, StyleSheet, View } from 'react-native';
 
-import { AppText } from '../../../components/AppText';
-import { Button } from '../../../components/Button';
-import { ConditionsEditor } from '../../../components/ConditionsEditor';
-import { DateField } from '../../../components/DateField';
-import { CommitTextField, RatingPicker } from '../../../components/Inputs';
-import { Card, Divider, EmptyState, Row, Screen, SectionHeader } from '../../../components/Layout';
-import { IllustrativeLegend, SetupSummary } from '../../../components/Suspension';
-import { sessionRepository, useEffectiveSetup, useSession } from '../../../data';
-import { RATING_KEYS } from '../../../domain/labels';
-import { formatValue, getSettingDef, unitLabel } from '../../../domain/settings';
-import { adjustmentDelta, countUnverified } from '../../../domain/setup';
-import type { Adjustment, BikeUnits, SettingKey } from '../../../domain/types';
-import { colors, radius, spacing, touch } from '../../../theme/tokens';
+import { conditionsSummary, Timeline } from '../../../components/session/Timeline';
+import { formatDate } from '../../../components/session/SessionCard';
+import { SetupSummary } from '../../../components/suspension/SetupSummary';
+import {
+  ActionTile,
+  Button,
+  Card,
+  Collapsible,
+  CommitTextField,
+  DateField,
+  Divider,
+  EmptyState,
+  ListGroup,
+  ListRow,
+  Metric,
+  MetricRow,
+  Screen,
+  Section,
+  Text,
+  TextLink,
+} from '../../../components/ui';
+import { savedSetupRepository, sessionRepository, useBike, useEffectiveSetup, useSession } from '../../../data';
+import { describeSetting, formatDelta, formatSetting } from '../../../domain/settings';
+import { applyAdjustments, changedPaths } from '../../../domain/setup';
+import { formatDuration, sessionTitle, summarizeSession } from '../../../domain/session';
+import type { Session } from '../../../domain/types';
+import { useNow } from '../../../hooks/useNow';
+import { colors, spacing } from '../../../theme/tokens';
 
-export default function SessionDetailScreen() {
+export default function SessionScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const session = useSession(id);
-  const effective = useEffectiveSetup(session);
-
-  const changedKeys = useMemo(
-    () => new Set<SettingKey>(session?.adjustments.map((a) => a.setting) ?? []),
-    [session?.adjustments],
-  );
-
-  if (!session || !effective) {
+  if (!session) {
     return (
-      <Screen edges={['bottom']}>
+      <Screen>
         <EmptyState title="Session not found" />
       </Screen>
     );
   }
+  return <SessionView session={session} />;
+}
 
-  const { units } = session.snapshot;
+function SessionView({ session }: { session: Session }) {
+  const bike = useBike(session.bikeId);
+  const effective = useEffectiveSetup(session)!;
   const isActive = session.status === 'active';
-  const unverified = countUnverified(session.snapshot.setup);
+  const now = useNow(isActive ? 30_000 : null);
+  const sum = summarizeSession(session);
+  const units = session.snapshot.units;
+  const changed = useMemo(() => changedPaths(session.snapshot.setup, effective), [session.snapshot.setup, effective]);
 
-  const confirmDelete = () =>
-    Alert.alert('Delete session?', 'This permanently deletes the session and its adjustments.', [
+  const lastAdj = sum.lastAdjustment;
+  const lastAdjIndex = lastAdj ? session.events.indexOf(lastAdj) : -1;
+  const lastAdjDesc = lastAdj ? describeSetting(applyAdjustments(session.snapshot.setup, session.events.slice(0, lastAdjIndex)), lastAdj.path) : undefined;
+
+  const undoLast = () =>
+    Alert.alert('Undo last entry?', 'Removes only the most recent entry from this session.', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          await sessionRepository.remove(session.id);
-          router.back();
-        },
-      },
+      { text: 'Undo', style: 'destructive', onPress: () => void sessionRepository.undoLastEvent(session.id) },
     ]);
 
+  const end = () =>
+    Alert.alert('End session?', sum.untestedAdjustments > 0 ? `${sum.untestedAdjustments} change${sum.untestedAdjustments === 1 ? ' has' : 's have'} not been tested with a run yet. You can reopen the session later.` : 'You can reopen it later from History.', [
+      { text: 'Keep riding', style: 'cancel' },
+      { text: 'End session', onPress: () => void sessionRepository.end(session.id) },
+    ]);
+
+  const saveAs = async (name: string) => {
+    if (!bike) return;
+    await savedSetupRepository.save(bike.id, { name: name.trim() || defaultName, setup: effective, sourceSessionId: session.id });
+    Alert.alert('Setup saved', 'Find it under Saved setups on the motorcycle profile.');
+  };
+  const defaultName = `${sessionTitle(session)} · ${formatDate(session.date)}`;
+  const saveSetup = () => {
+    // Alert.prompt is iOS-only; elsewhere save with a default name (rename later).
+    if (Platform.OS === 'ios') Alert.prompt('Save this setup', 'Name the setup this session ended on.', (n) => void saveAs(n), 'plain-text', defaultName);
+    else void saveAs(defaultName);
+  };
+
+  const footer = isActive ? (
+    <>
+      <View style={styles.actions}>
+        <ActionTile label="LOG FEEDBACK" icon="chatbubble-ellipses" onPress={() => router.push(`/session/${session.id}/feedback`)} />
+        <ActionTile label="RECORD ADJUSTMENT" icon="options" variant="secondary" onPress={() => router.push(`/session/${session.id}/adjust`)} />
+      </View>
+      <Button label="END SESSION" variant="ghost" size="sm" block onPress={end} />
+    </>
+  ) : undefined;
+
   return (
-    <Screen edges={['bottom']}>
-      <Stack.Screen options={{ title: session.trackName || 'Session' }} />
+    <Screen footer={footer}>
+      <Stack.Screen options={{ title: isActive ? 'Live session' : 'Session' }} />
 
-      <Card level={2} highlight={isActive}>
-        <AppText variant="label" tone={isActive ? 'accent' : 'secondary'}>
-          {isActive ? 'In progress' : 'Completed'}
-        </AppText>
-        <CommitTextField
-          label="Track"
-          value={session.trackName}
-          onCommit={(trackName) => void sessionRepository.updateDetails(session.id, { trackName: trackName.trim() })}
-        />
-        <DateField
-          label="Date"
-          value={session.date}
-          onChange={(date) => void sessionRepository.updateDetails(session.id, { date })}
-        />
-        <AppText variant="caption" tone="muted">
-          {session.snapshot.bikeLabel} · setup snapshotted {new Date(session.snapshot.capturedAt).toLocaleString()}
-        </AppText>
-      </Card>
-
-      <SectionHeader title={`Adjustments (${session.adjustments.length})`} />
-      <Card>
-        {session.adjustments.length === 0 ? (
-          <AppText tone="muted">No changes yet. Log each clicker, spring or sag change as you make it.</AppText>
+      <View style={styles.head}>
+        {isActive ? (
+          <View style={styles.liveRow}>
+            <View style={styles.liveDot} />
+            <Text variant="overline" tone="accent">
+              Live · started {new Date(session.startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+            </Text>
+          </View>
         ) : (
-          session.adjustments.map((adj, i) => (
-            <View key={adj.id}>
-              {i > 0 ? <Divider /> : null}
-              <AdjustmentRow
-                adjustment={adj}
-                units={units}
-                onRemove={() =>
-                  Alert.alert('Remove adjustment?', undefined, [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Remove',
-                      style: 'destructive',
-                      onPress: () => void sessionRepository.removeAdjustment(session.id, adj.id),
-                    },
-                  ])
-                }
-              />
-            </View>
-          ))
+          <Text variant="overline" tone="tertiary">
+            Completed · {formatDate(session.date)}
+          </Text>
         )}
-        <Button
-          label="Log adjustment"
-          icon="add"
-          size="large"
-          onPress={() => router.push(`/session/${session.id}/adjust`)}
-        />
-      </Card>
+        <Text variant="title">{sessionTitle(session)}</Text>
+        <Text variant="subhead" tone="secondary">
+          {session.snapshot.bikeLabel}
+        </Text>
+      </View>
 
-      <SectionHeader title="Rider feedback" />
-      <Card>
-        {RATING_KEYS.map((r) => (
-          <RatingPicker
-            key={r.key}
-            label={r.label}
-            hint={r.hint}
-            value={session.feedback.ratings[r.key]}
-            onChange={(v) =>
-              void sessionRepository.updateFeedback(session.id, {
-                ...session.feedback,
-                ratings: { ...session.feedback.ratings, [r.key]: v },
-              })
-            }
-          />
-        ))}
-        <CommitTextField
-          label="Notes"
-          value={session.feedback.notes}
-          multiline
-          placeholder="What did the bike do? Where on the track?"
-          onCommit={(notes) => void sessionRepository.updateFeedback(session.id, { ...session.feedback, notes })}
-        />
-      </Card>
+      <MetricRow>
+        <Metric label={isActive ? 'Duration' : 'Length'} value={formatDuration(session.startedAt, session.endedAt ?? now)} />
+        <Metric label="Test runs" value={String(sum.testRuns)} />
+        <Metric label="Changes" value={String(sum.adjustments)} tone={sum.adjustments ? 'accent' : 'primary'} />
+      </MetricRow>
 
-      <SectionHeader title="Conditions" />
-      <Card>
-        <ConditionsEditor
-          value={session.conditions}
-          temperatureUnit={units.temperature}
-          onChange={(patch) => void sessionRepository.updateConditions(session.id, patch)}
-        />
-      </Card>
-
-      <SectionHeader title="Setup at session start (snapshot)" />
-      <Card>
-        <AppText variant="heading">Fork</AppText>
-        <SetupSummary setup={session.snapshot.setup} units={units} end="fork" />
-        <AppText variant="heading">Shock</AppText>
-        <SetupSummary setup={session.snapshot.setup} units={units} end="shock" />
-        {unverified > 0 ? <IllustrativeLegend /> : null}
-      </Card>
-
-      {session.adjustments.length > 0 ? (
-        <>
-          <SectionHeader title="Setup now (after adjustments)" />
-          <Card>
-            <AppText variant="heading">Fork</AppText>
-            <SetupSummary setup={effective} units={units} end="fork" highlightKeys={changedKeys} />
-            <AppText variant="heading">Shock</AppText>
-            <SetupSummary setup={effective} units={units} end="shock" highlightKeys={changedKeys} />
-          </Card>
-        </>
+      {isActive && lastAdj && lastAdjDesc ? (
+        <Card variant="raised" style={styles.lastAdj}>
+          <Text variant="overline" tone="tertiary">
+            Most recent change{sum.untestedAdjustments > 0 ? ' · not yet tested' : ''}
+          </Text>
+          <Text variant="bodyStrong">
+            {lastAdjDesc.end === 'fork' ? 'Fork' : 'Shock'} {lastAdjDesc.label.toLowerCase()}:{' '}
+            <Text variant="bodyStrong" tone="accent">
+              {formatSetting(lastAdjDesc, lastAdj.after, units)}
+            </Text>
+          </Text>
+          <Text variant="caption" tone="secondary">
+            {(() => {
+              const d = formatDelta(lastAdjDesc, lastAdj.before, lastAdj.after, units);
+              return `${d.text}${d.direction ? ` · ${d.direction}` : ''} from ${formatSetting(lastAdjDesc, lastAdj.before, units)}`;
+            })()}
+          </Text>
+        </Card>
       ) : null}
 
-      {isActive ? (
-        <Button
-          label="Finish session"
-          icon="checkmark-done"
-          size="large"
-          onPress={async () => {
-            await sessionRepository.complete(session.id);
-            router.back();
-          }}
+      <Section
+        title={isActive ? 'Current setup' : 'Final setup'}
+        action={sum.adjustments > 0 ? <TextLink label="Compare to start" onPress={() => router.push({ pathname: '/compare', params: { a: `start:${session.id}`, b: `end:${session.id}` } })} /> : undefined}
+      >
+        <Card>
+          <SetupSummary setup={effective} units={units} highlight={changed} />
+          {changed.size > 0 ? (
+            <Text variant="caption" tone="tertiary">
+              Lime values changed during this session
+            </Text>
+          ) : null}
+        </Card>
+      </Section>
+
+      <ListGroup>
+        <ListRow
+          icon="partly-sunny-outline"
+          title="Track conditions"
+          subtitle={conditionsSummary(session.conditions, units) || (isActive ? 'Optional: add dirt, moisture, ruts…' : 'Not recorded')}
+          onPress={() => router.push(`/session/${session.id}/conditions`)}
         />
-      ) : (
-        <Button label="Reopen session" variant="secondary" onPress={() => void sessionRepository.reopen(session.id)} />
-      )}
-      <Button label="Delete session" variant="danger" icon="trash-outline" onPress={confirmDelete} />
+      </ListGroup>
+
+      <Section title="Timeline">
+        <Card>
+          <Timeline session={session} onUndoLast={isActive && session.events.length > 0 ? undoLast : undefined} />
+        </Card>
+      </Section>
+
+      <Card padded={false}>
+        <Collapsible title="Session details" summary={formatDate(session.date)}>
+          <CommitTextField label="Track" value={session.trackName} placeholder="Track name" onCommit={(trackName) => void sessionRepository.updateDetails(session.id, { trackName: trackName.trim() })} />
+          <DateField label="Date" value={session.date} onChange={(date) => void sessionRepository.updateDetails(session.id, { date })} />
+          <CommitTextField label="Notes" multiline value={session.notes} placeholder="Anything else worth remembering" onCommit={(notes) => void sessionRepository.updateDetails(session.id, { notes })} />
+        </Collapsible>
+        <Divider />
+        <Collapsible title="Starting setup" summary="Snapshot">
+          <SetupSummary setup={session.snapshot.setup} units={units} />
+          <Text variant="caption" tone="tertiary">
+            Captured {new Date(session.snapshot.capturedAt).toLocaleString()}. Garage edits never change it.
+          </Text>
+        </Collapsible>
+        {session.legacyFeedback ? (
+          <>
+            <Divider />
+            <Collapsible title="Ratings (earlier app version)">
+              {Object.entries(session.legacyFeedback.ratings).map(([k, v]) => (
+                <View key={k} style={styles.kv}>
+                  <Text variant="subhead" tone="secondary" style={styles.flex}>
+                    {k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}
+                  </Text>
+                  <Text variant="value">{v === null ? '—' : `${v}/5`}</Text>
+                </View>
+              ))}
+            </Collapsible>
+          </>
+        ) : null}
+      </Card>
+
+      {!isActive ? (
+        <View style={styles.doneActions}>
+          <Button label="Save final setup" icon="bookmark-outline" variant="secondary" block onPress={saveSetup} />
+          <Button label="Reopen session" variant="secondary" block onPress={() => void sessionRepository.reopen(session.id)} />
+          <Button
+            label="Delete session"
+            variant="danger"
+            icon="trash-outline"
+            block
+            onPress={() =>
+              Alert.alert('Delete session?', 'This permanently deletes the session and its timeline.', [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: async () => {
+                    router.back();
+                    await sessionRepository.remove(session.id);
+                  },
+                },
+              ])
+            }
+          />
+        </View>
+      ) : null}
     </Screen>
   );
 }
 
-function AdjustmentRow({
-  adjustment,
-  units,
-  onRemove,
-}: {
-  adjustment: Adjustment;
-  units: BikeUnits;
-  onRemove: () => void;
-}) {
-  const def = getSettingDef(adjustment.setting);
-  const delta = adjustmentDelta(adjustment);
-  const unit = def.kind === 'clicker' ? 'clicks' : unitLabel(def.kind, units);
-  const deltaText =
-    delta === null ? 'new' : `${delta > 0 ? '+' : ''}${formatValue(delta, def)}${def.kind === 'clicker' ? '' : ` ${unit}`}`;
-
-  return (
-    <View style={styles.adjRow}>
-      <Row style={{ justifyContent: 'space-between' }}>
-        <AppText variant="bodyStrong" style={{ flex: 1 }}>
-          {def.end === 'fork' ? 'Fork' : 'Shock'} · {def.label}
-        </AppText>
-        <Pressable
-          onPress={onRemove}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Remove ${def.label} adjustment`}
-          style={styles.iconButton}
-        >
-          <Ionicons name="trash-outline" size={20} color={colors.textSecondary} />
-        </Pressable>
-      </Row>
-      <Row>
-        <AppText variant="value" tone="secondary">
-          {formatValue(adjustment.before, def)}
-        </AppText>
-        <Ionicons name="arrow-forward" size={20} color={colors.textMuted} />
-        <AppText variant="value" tone="accent">
-          {formatValue(adjustment.after, def)}
-        </AppText>
-        <AppText variant="caption" tone="secondary">
-          {unit}
-        </AppText>
-        <View style={styles.deltaPill}>
-          <AppText variant="caption" tone="accent" style={{ fontVariant: ['tabular-nums'], fontWeight: '700' }}>
-            {deltaText}
-          </AppText>
-        </View>
-      </Row>
-      {adjustment.reason ? <AppText tone="secondary">{adjustment.reason}</AppText> : null}
-      <AppText variant="caption" tone="muted">
-        {new Date(adjustment.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </AppText>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  adjRow: { gap: spacing.xs, paddingVertical: spacing.sm },
-  iconButton: { width: touch.min, height: touch.min, alignItems: 'center', justifyContent: 'center' },
-  deltaPill: {
-    marginLeft: 'auto',
-    backgroundColor: colors.accentSubtle,
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xxs,
-  },
+  flex: { flex: 1 },
+  head: { gap: 2 },
+  liveRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent },
+  lastAdj: { gap: 3 },
+  actions: { flexDirection: 'row', gap: spacing.sm },
+  kv: { flexDirection: 'row', alignItems: 'center', minHeight: 32 },
+  doneActions: { gap: spacing.sm },
 });
