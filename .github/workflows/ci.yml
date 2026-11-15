@@ -38,3 +38,6 @@ jobs:
 
       - name: Expo Doctor
         run: npx expo-doctor
+
+      - name: Bundle iOS + Android (expo export)
+        run: npx expo export --output-dir dist
