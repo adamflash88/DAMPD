@@ -54,7 +54,7 @@ export function AdjusterRow({
     <View style={styles.row}>
       <View style={styles.labelCol}>
         <View style={styles.labelLine}>
-          <Text variant="bodyStrong" numberOfLines={1} style={styles.shrink}>
+          <Text variant="bodyStrong" numberOfLines={2} style={styles.shrink}>
             {name}
           </Text>
           <SourceMark source={v.value === null ? 'unknown' : v.source} />

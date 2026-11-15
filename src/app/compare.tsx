@@ -102,7 +102,7 @@ function Comparison({
               {rows.map((r) => (
                 <Row
                   key={r.path}
-                  label={r.descriptor.shortLabel}
+                  label={r.descriptor.label.length <= 12 ? r.descriptor.label : r.descriptor.shortLabel}
                   a={r.presence === 'bOnly' ? 'n/a' : formatSetting(r.descriptor, r.a, units, true)}
                   b={r.presence === 'aOnly' ? 'n/a' : formatSetting(r.descriptor, r.b, units, true)}
                   changed={r.changed}

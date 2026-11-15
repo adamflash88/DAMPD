@@ -1,8 +1,9 @@
-import { DarkTheme, Stack, ThemeProvider, type Theme } from 'expo-router';
+import { DarkTheme, router, Stack, ThemeProvider, type Theme } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { TextLink } from '../components/ui';
 import { useHydrated } from '../data';
 import { colors } from '../theme/tokens';
 
@@ -29,7 +30,12 @@ const stackOptions = {
   contentStyle: { backgroundColor: colors.background },
 };
 
-const modal = { presentation: 'modal' as const };
+function CloseButton() {
+  return <TextLink label="Close" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />;
+}
+
+/** Modal sheets get an explicit Close (swipe-down also works on iOS). */
+const modal = { presentation: 'modal' as const, headerLeft: () => <CloseButton /> };
 
 export default function RootLayout() {
   const hydrated = useHydrated();

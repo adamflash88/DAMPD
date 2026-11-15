@@ -163,7 +163,7 @@ export function ActionTile({
       ]}
     >
       <Ionicons name={icon} size={22} color={fg} />
-      <Text variant="subhead" numberOfLines={1} adjustsFontSizeToFit style={[tileStyles.label, { color: fg }]}>
+      <Text variant="subhead" numberOfLines={2} align="center" style={[tileStyles.label, { color: fg }]}>
         {label}
       </Text>
     </Pressable>
@@ -180,5 +180,5 @@ const tileStyles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: spacing.sm,
   },
-  label: { fontWeight: '800', letterSpacing: 0.5 },
+  label: { fontWeight: '800', letterSpacing: 0.4, lineHeight: 16 },
 });

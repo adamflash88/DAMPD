@@ -46,7 +46,7 @@ export default function HomeScreen() {
             <Text variant="overline" tone="tertiary">
               Active motorcycle
             </Text>
-            <Text variant="title" numberOfLines={1}>
+            <Text variant="title" numberOfLines={2}>
               {bikeName(bike)}
             </Text>
             <Text variant="subhead" tone="secondary" numberOfLines={1}>
@@ -70,7 +70,7 @@ export default function HomeScreen() {
         />
         {active && activeSum ? (
           <Text variant="caption" tone="secondary" align="center">
-            {sessionTitle(active)} · {formatDuration(active.startedAt, now)} · {activeSum.testRuns} runs · {activeSum.adjustments} changes
+            {sessionTitle(active)} · {formatDuration(active.startedAt, now)} · {activeSum.testRuns} run{activeSum.testRuns === 1 ? '' : 's'} · {activeSum.adjustments} change{activeSum.adjustments === 1 ? '' : 's'}
           </Text>
         ) : null}
       </View>

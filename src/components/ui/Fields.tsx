@@ -185,5 +185,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.surfaceRaised,
   },
-  numberInput: { flex: 1, ...typography.value, color: colors.textPrimary, paddingVertical: spacing.xs, textAlign: 'right' },
+  numberInput: { flex: 1, minWidth: 0, ...typography.value, color: colors.textPrimary, paddingVertical: spacing.xs, textAlign: 'right' },
 });

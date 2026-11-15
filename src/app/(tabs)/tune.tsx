@@ -45,7 +45,7 @@ export default function TuneScreen() {
           </View>
           <Text variant="title">{sessionTitle(current)}</Text>
           <Text variant="subhead" tone="secondary">
-            {currentBike ? bikeName(currentBike) : current.snapshot.bikeLabel} · {sum.testRuns} runs · {sum.adjustments} changes
+            {currentBike ? bikeName(currentBike) : current.snapshot.bikeLabel} · {sum.testRuns} run{sum.testRuns === 1 ? '' : 's'} · {sum.adjustments} change{sum.adjustments === 1 ? '' : 's'}
           </Text>
           <Button label="CONTINUE SESSION" size="lg" icon="play" onPress={() => router.push(`/session/${current.id}`)} />
         </Card>

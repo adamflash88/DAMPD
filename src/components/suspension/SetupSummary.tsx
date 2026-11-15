@@ -43,14 +43,15 @@ function EndSummary({
   highlight?: ReadonlySet<SettingPath>;
   showSag: boolean;
 }) {
-  const adjusters = setup[end].adjusters.slice(0, showSag ? 3 : 4);
-  const sag = end === 'shock' ? setup.shock.measurements.raceSag : null;
+  const adjusters = setup[end].adjusters.slice(0, 4);
+  const sag = end === 'shock' && showSag ? setup.shock.measurements.raceSag : null;
+  const spring = end === 'shock' && showSag ? setup.shock.measurements.springRate : null;
   return (
     <View style={styles.end}>
       <Text variant="overline" tone="tertiary" style={styles.endLabel}>
         {end === 'fork' ? 'Fork' : 'Shock'}
       </Text>
-      {adjusters.length === 0 && !showSag ? (
+      {adjusters.length === 0 ? (
         <Text variant="caption" tone="tertiary">
           No adjusters set up
         </Text>
@@ -68,17 +69,26 @@ function EndSummary({
               />
             );
           })}
-          {showSag && sag ? (
-            <Metric
-              label="Race sag"
-              value={formatQuantity('length', sag.value, units, false)}
-              unit={sag.value === null ? undefined : unitSymbol('length', units)}
-              tone={highlight?.has(measurementPath('shock', 'raceSag')) ? 'accent' : 'primary'}
-              mark={<SourceMark source={sag.value === null ? 'unknown' : sag.source} />}
-            />
-          ) : null}
         </MetricRow>
       )}
+      {sag && spring ? (
+        <MetricRow>
+          <Metric
+            label="Race sag"
+            value={formatQuantity('length', sag.value, units, false)}
+            unit={sag.value === null ? undefined : unitSymbol('length', units)}
+            tone={highlight?.has(measurementPath('shock', 'raceSag')) ? 'accent' : 'primary'}
+            mark={<SourceMark source={sag.value === null ? 'unknown' : sag.source} />}
+          />
+          <Metric
+            label="Spring"
+            value={formatQuantity('springRate', spring.value, units, false)}
+            unit={spring.value === null ? undefined : unitSymbol('springRate', units)}
+            tone={highlight?.has(measurementPath('shock', 'springRate')) ? 'accent' : 'primary'}
+            mark={<SourceMark source={spring.value === null ? 'unknown' : spring.source} />}
+          />
+        </MetricRow>
+      ) : null}
     </View>
   );
 }
